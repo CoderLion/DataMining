@@ -2,8 +2,10 @@ import numpy as np
 
 def transform(X):
     # This transforms [x1, .., xn]  ->  [x1, .., xn, 1]
+    # np.insert needs the position of where the 1 should be inserted (which is 400)
+    # and the axis along which the datapoints are stacked
     a = len(X.shape) - 1  # If X is 1-dim. we want to add at axis 0. If 2-dim, we want 1
-    d = X.shape[-1]       # Ones should be added at the n-th column, where X = R^(m*n)
+    d = X.shape[-1]       # If X is R^(m*n), this gives n. If X is R^(n) this gives also n
     return np.insert(X, d, 1, axis = a)
 
 
