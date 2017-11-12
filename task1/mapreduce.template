@@ -1,0 +1,136 @@
+import random
+import numpy as np
+
+# SOME PRIME NUMBERS UP TO 550 ################################################
+primes = np.array([
+  2,   3,   5,   7,  11,  13,  17,  19,  23,  29,
+ 31,  37,  41,  43,  47,  53,  59,  61,  67,  71,
+ 73,  79,  83,  89,  97, 101, 103, 107, 109, 113,
+127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
+179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
+233, 239, 241, 251, 257, 263, 269, 271, 277, 281,
+283, 293, 307, 311, 313, 317, 331, 337, 347, 349,
+353, 359, 367, 373, 379, 383, 389, 397, 401, 409,
+419, 421, 431, 433, 439, 443, 449, 457, 461, 463,
+467, 479, 487, 491, 499, 503, 509, 521, 523, 541
+])
+
+# PARAMETERS ##################################################################
+
+# shingle matrix parameters
+R = 8192        # number distinct of k-shingles (rows)
+
+# signature matrix paramenters
+S_num_bands = {{BANDS}}
+S_rows_per_band = {{ROWS_PER_BAND}}
+S_num_rows  = S_num_bands * S_rows_per_band
+
+# hashing parameters
+seed = 23           # PRNG seed
+random.seed(23)
+# http://compoasso.free.fr/primelistweb/page/prime/liste_online_en.php
+# the LSH hash falls between [1, R^2 + R] before the modulo
+# thus we picked some large prime in the middle of the interval
+p_lsh = 33556711
+# for the exact hashing we have the same situation that it will be within
+# [1, R^2 + R], thus we picked again a prime that is about in the middle
+p_ex  = 33557077
+# the sum of the exact hashes falls within [1, S_rows_per_band * p_ex]
+# before the hashing. For simplicity we write the modulus as a product of
+# primes, where one prime is very close to the size of p_ex, and the other
+# is about half of the number of rows per band.
+pr_idx = (np.abs(primes-(S_rows_per_band/2))).argmin()
+m = 33557011 * max(2, primes[pr_idx])
+
+# do exact comparison
+DO_EXACT_JACCARD_COMPARISON = False
+
+# CREATION OF LOCALITY SENSITIVE HASHING FUNCTIONS ############################
+
+# create lsh function parameters
+lsh_a = np.random.randint(1, R+1, S_num_rows)
+lsh_b = np.random.randint(0, R+1, S_num_rows)
+
+# create exact hashing function parameters
+exh_a = np.random.randint(1, R+1, S_rows_per_band)
+exh_b = np.random.randint(0, R+1, S_rows_per_band)
+
+# IMPLEMENTATION ##############################################################
+
+# key: None
+# value: set of singles (incidence vector)
+def mapper(key, value):
+
+    # get document key
+    document_id = int(value[11:14])
+
+    # get list of shingles
+    shingles = [int(x) for x in value[15:].split()]
+
+    # create signature matrix column and fill it with maximum min-hash value
+    SigMat = np.full(S_num_rows, R)
+
+    # for each encountred shingle
+    for shingle in shingles:
+        # for each hash function
+        for i in range(0,S_num_rows):
+            # update signature matrix columns with most recent minhash
+            SigMat[i] = min(SigMat[i],
+                           ((lsh_a[i] * shingle + lsh_b[i]) % p_lsh) % R)
+
+    # now we have computed all the min-hashes for a specific
+    # document (key). what we'll do next is to compute the final buckets
+    # for each of the bands and emit them with the corresponding document as final result
+
+    # for each band
+    for i in range(0, S_num_bands):
+        # compute the hash per band
+        sum = 0
+        # for each row in a band
+        for j in range(0, S_rows_per_band):
+            sum += (exh_a[j] * SigMat[i * S_rows_per_band + j] + exh_b[j]) % p_ex
+        bucketNr = sum % m # TODO: think about how to set this parameter
+        #
+        if DO_EXACT_JACCARD_COMPARISON:
+            yield bucketNr, (document_id, shingles)
+        else:
+            yield bucketNr, document_id
+
+
+# key: key from mapper used to aggregate
+# values: list of all value for that key
+def reducer(key, values):
+
+    if DO_EXACT_JACCARD_COMPARISON:
+        # convert all elements to sets
+        values_as_sets = [(x[0], set(x[1])) for x in values]
+        # for each document that happened to fall into the same bin
+        for i in range(0, len(values_as_sets)):
+            # for each other document that happened to fall into the same bin
+            for j in range(i+1, len(values_as_sets)):
+                # check: avoid emitting the pair if i=j
+                # this happens when a document is hashed to the same bucket
+                # in different bands
+                # (doesn't happen anyways with enough buckets)
+                id_1 = values_as_sets[i][0]
+                id_2 = values_as_sets[j][0]
+                if id_1 != id_2:
+                    s_1 = values_as_sets[i][1]
+                    s_2 = values_as_sets[j][1]
+                    jaccard_sim = float(len(s_1 & s_2)) / float(len(s_1 | s_2))
+                    if jaccard_sim >= 0.85:
+                        yield min(id_1, id_2), max(id_1, id_2)
+    else:
+        # for each element that happened to fall into the same bin
+        for i in range(0, len(values)):
+            # for each other element that happened to fall into the same bin
+            for j in range(i+1, len(values)):
+                # check: avoid emitting the pair if i=j
+                # this happens when a document is hashed to the same bucket
+                # in different bands
+                # (doesn't happen anyways with enough buckets)
+                id_1 = values[i]
+                id_2 = values[j]
+                if id_1 != id_2:
+                    # emit that they're similar
+                    yield min(values[i], values[j]), max(values[i], values[j])
